@@ -15,6 +15,7 @@ from models.early_stopper import EarlyStopping
 from models.deep_set_attention import DeepSetAttentionModel
 from models.grud import GRUDModel
 from models.ip_nets import InterpolationPredictionModel
+from models.mamba import EncoderClassifierMamba
 
 
 def train_test(
@@ -126,6 +127,14 @@ def train(
             sensors_count=sensor_count,
             static_count=static_size,
             return_intermediates=False,
+            **model_args
+        )
+    elif model_type == "mamba":
+        model = EncoderClassifierMamba(
+            device=device,
+            max_timepoint_count=max_seq_length,
+            sensors_count=sensor_count,
+            static_count=static_size,
             **model_args
         )
     model_parameters = filter(lambda p: p.requires_grad, model.parameters())
