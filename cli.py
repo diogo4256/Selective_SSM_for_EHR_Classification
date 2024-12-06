@@ -102,9 +102,7 @@ def core_function(
         # make run folder
         base_run_path = os.path.join(output_path, f"split_{split_index}")
         run_path = base_run_path
-        if os.path.exists(run_path):
-            raise ValueError(f"Path {run_path} already exists.")
-        os.mkdir(run_path)
+        os.makedirs(run_path, exist_ok=True)
 
         # save model settings
         model_settings = {

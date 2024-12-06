@@ -1,11 +1,23 @@
 --extra-index-url https://download.pytorch.org/whl/cu118
 torch==2.2.0
-numpy==1.25.1
-tqdm==4.66.2
-pandas==1.1.4
+numpy==1.26.4
+tqdm==4.66.3
+pandas==2.2.1
 h5py==3.12.1
 matplotlib==3.8.2
 matplotlib-inline==0.1.7
 click==8.1.7
-scikit-learn==0.24.2
+scikit-learn==1.2.2
 x-transformers==1.16.23
+keras==2.15.0
+lightning==2.3.3
+wandb==0.16.0
+sqlalchemy==2.0.28
+psycopg2-binary==2.9.9
+fhir-resources==5.1.1
+pyarrow==15.0.1
+plotly==5.7.0
+tokenizers==0.15.2
+transformers==4.39.3
+captum==0.7.0
+scikit-multilearn==0.2.0

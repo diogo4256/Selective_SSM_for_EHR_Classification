@@ -132,11 +132,17 @@ def train(
     elif model_type == "mamba":
         model = EncoderClassifierMamba(
             device=device,
-            max_timepoint_count=max_seq_length,
+            pooling=model_args.get("pooling", "mean"),
+            num_classes=2,
             sensors_count=sensor_count,
             static_count=static_size,
-            **model_args
-        )
+            layers=model_args.get("layers", 1),
+            d_model=model_args.get("mamba_d_model", 256),
+            ssm_state_size=model_args.get("mamba_state_size", 16),
+            expand_factor=model_args.get("mamba_expand_factor", 2),
+            dropout=model_args.get("dropout", 0.2),
+        ).to(device)
+    
     model_parameters = filter(lambda p: p.requires_grad, model.parameters())
     params = sum([np.prod(p.size()) for p in model_parameters])
     print(f"# of trainable parameters: {params}")
