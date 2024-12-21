@@ -15,6 +15,7 @@ from models.early_stopper import EarlyStopping
 from models.deep_set_attention import DeepSetAttentionModel
 from models.grud import GRUDModel
 from models.ip_nets import InterpolationPredictionModel
+from models.mamba import EncoderClassifierMamba
 
 
 def train_test(
@@ -28,7 +29,8 @@ def train_test(
     epochs=300,
     patience=5,
     lr=0.0001,
-    early_stop_criteria="auroc"
+    early_stop_criteria="auroc", 
+    loss_function="cross_entropy"
 ):
 
     train_batch_size = batch_size // 2  # we concatenate 2 batches together
@@ -61,7 +63,7 @@ def train_test(
         model_args=model_args
     )
 
-    loss, accuracy_score, auprc_score, auc_score = test(
+    loss, accuracy_score, auprc_score, auc_score, f1_score = test(
         test_dataloader=test_dataloader,
         output_path=output_path,
         device=device,
@@ -70,7 +72,7 @@ def train_test(
         model_args=model_args,
     )
 
-    return loss, accuracy_score, auprc_score, auc_score
+    return loss, accuracy_score, auprc_score, auc_score, f1_score
 
 
 def train(
@@ -84,6 +86,7 @@ def train(
     lr,
     early_stop_criteria,
     model_args,
+    loss_function="cross_entropy",
     **kwargs,  
 ):
     """
@@ -128,10 +131,31 @@ def train(
             return_intermediates=False,
             **model_args
         )
+    elif model_type == "mamba":
+        model = EncoderClassifierMamba(
+            device=device,
+            pooling=model_args.get("pooling", "mean"),
+            num_classes=2,
+            sensors_count=sensor_count,
+            static_count=static_size,
+            layers=model_args.get("layers", 1),
+            d_model=model_args.get("mamba_d_model", 256),
+            ssm_state_size=model_args.get("mamba_state_size", 16),
+            expand_factor=model_args.get("mamba_expand_factor", 2),
+            dropout=model_args.get("dropout", 0.2),
+        ).to(device)
+    
     model_parameters = filter(lambda p: p.requires_grad, model.parameters())
     params = sum([np.prod(p.size()) for p in model_parameters])
     print(f"# of trainable parameters: {params}")
-    criterion = nn.CrossEntropyLoss()  # loss
+    if loss_function == "cross_entropy":
+        criterion = nn.CrossEntropyLoss()
+    elif loss_function == "bce_with_logits":
+        criterion = nn.BCEWithLogitsLoss()
+    elif loss_function == "mse":
+        criterion = nn.MSELoss()
+    else:
+        raise ValueError(f"Invalid loss function: {loss_function}")
     optimizer = torch.optim.Adam(
         model.parameters(), lr=lr
     )
@@ -143,7 +167,7 @@ def train(
     # initialize results file
     with open(f"{output_path}/training_log.csv", "w") as train_log:
         train_log.write(
-            ",".join(["epoch", "train_loss", "val_loss", "val_roc_auc_score"]) + "\n"
+            ",".join(["epoch", "train_loss", "val_loss", "val_roc_auc_score", "val_auprc_score", "val_f1_score"]) + "\n"
         )
 
     for epoch in range(epochs):
@@ -170,7 +194,18 @@ def train(
             else:
                 recon_loss = 0
             predictions = predictions.squeeze(-1)
-            loss = criterion(predictions.cpu(), labels) + recon_loss
+
+            if loss_function == "bce_with_logits":
+                # Ensure labels are float tensors for BCEWithLogitsLoss
+                labels = labels.float()
+                # Adjust predictions shape if necessary
+                predictions = predictions.squeeze()
+                # Compute loss
+                loss = criterion(predictions.to(device), labels.to(device)) + recon_loss
+            else:
+                # Use original loss computation
+                loss = criterion(predictions.to(device), labels.to(device)) + recon_loss
+            
             loss_list.append(loss.item())
             loss.backward()
             optimizer.step()
@@ -199,15 +234,35 @@ def train(
                 predictions_list = torch.cat(
                     (predictions_list, predictions.cpu()), dim=0
                 )
-            probs = torch.nn.functional.softmax(predictions_list, dim=1)
-            auc_score = metrics.roc_auc_score(labels_list, probs[:, 1])
-            aupr_score = metrics.average_precision_score(labels_list, probs[:, 1])
+                # Compute validation loss
+                val_loss = criterion(predictions_list.to(device), labels_list.to(device))
 
-        val_loss = criterion(predictions_list.cpu(), labels_list)
+                # Compute metrics
+                labels_list = labels_list.cpu()
+                predictions_list = predictions_list.cpu()
+                if loss_function == "bce_with_logits":
+                    # Convert model outputs using sigmoid
+                    probs = torch.sigmoid(predictions_list.squeeze())  # Shape: (N,)
+                    predicted_labels = (probs > 0.5).long()
+                    labels_list_int = labels_list.long()
+                    # Compute metrics
+                    auc_score = metrics.roc_auc_score(labels_list_int, probs)
+                    aupr_score = metrics.average_precision_score(labels_list_int, probs)
+                    f1_score = metrics.f1_score(labels_list_int, predicted_labels)
+                else:
+                    # Convert model outputs using softmax
+                    probs = torch.nn.functional.softmax(predictions_list, dim=1)  # Shape: (N, 2)
+                    predicted_labels = torch.argmax(probs, dim=1).long()
+                    probs_positive = probs[:, 1]
+                    labels_list_int = labels_list.long()
+                    # Compute metrics
+                    auc_score = metrics.roc_auc_score(labels_list_int, probs_positive)
+                    aupr_score = metrics.average_precision_score(labels_list_int, probs_positive)
+                    f1_score = metrics.f1_score(labels_list_int, predicted_labels)
 
         with open(f"{output_path}/training_log.csv", "a") as train_log:
             train_log.write(
-                ",".join(map(str, [epoch + 1, accum_loss, val_loss.item(), auc_score]))
+                ",".join(map(str, [epoch + 1, accum_loss, val_loss.item(), auc_score, aupr_score, f1_score]))
                 + "\n"
             )
 
@@ -222,23 +277,45 @@ def train(
             early_stopping(1 - (aupr_score + auc_score), model)
         elif early_stop_criteria == "loss":
             early_stopping(val_loss, model)
+        elif early_stop_criteria == "f1-score":
+            early_stopping(1 - f1_score, model)
 
         if early_stopping.early_stop:
             print("Early stopping")
             break
 
-    # save training curves
-    training_log = pd.read_csv(f"{output_path}/training_log.csv")
-    fig = plt.figure()
-    fig.suptitle("training curves")
-    ax0 = fig.add_subplot(121, title="loss")
-    ax0.plot(training_log["train_loss"], label="Training")
-    ax0.plot(training_log["val_loss"], label="Validation")
-    ax0.legend()
-    ax1 = fig.add_subplot(122, title="auroc")
-    ax1.plot(training_log["val_roc_auc_score"], label="Training")
-    ax1.legend()
-    fig.savefig(f"{output_path}/train_curves.jpg")
+        # Save training curves
+        training_log = pd.read_csv(f"{output_path}/training_log.csv")
+
+        # Create a figure with subplots
+        fig = plt.figure(figsize=(12, 10))
+        fig.suptitle("Training Curves")
+
+        # Subplot 1: Loss
+        ax0 = fig.add_subplot(221, title="Loss")
+        ax0.plot(training_log["train_loss"], label="Training Loss")
+        ax0.plot(training_log["val_loss"], label="Validation Loss")
+        ax0.legend()
+
+        # Subplot 2: AUROC
+        ax1 = fig.add_subplot(222, title="AUROC")
+        ax1.plot(training_log["val_roc_auc_score"], label="Validation AUROC")
+        ax1.legend()
+
+        # Subplot 3: F1 Score
+        ax2 = fig.add_subplot(223, title="F1 Score")
+        ax2.plot(training_log["val_f1_score"], label="Validation F1 Score")
+        ax2.legend()
+
+        # Subplot 4: AUPRC
+        ax3 = fig.add_subplot(224, title="AUPRC")
+        ax3.plot(training_log["val_auprc_score"], label="Validation AUPRC")
+        ax3.legend()
+
+        # Adjust layout and save the figure
+        fig.tight_layout(rect=[0, 0.03, 1, 0.95])
+        fig.savefig(f"{output_path}/train_curves.jpg")
+        plt.close(fig)  # Close the figure to free memory
 
     return val_loss, model
 
@@ -298,13 +375,16 @@ def test(
 
     auc_score = metrics.roc_auc_score(labels_list, probs[:, 1])
     auprc_score = metrics.average_precision_score(labels_list, probs[:, 1])
+    predicted_labels = torch.argmax(probs, dim=1)  # Convert probabilities to class label
     accuracy_score = metrics.accuracy_score(labels_list, np.argmax(probs, axis=1))
+    f1_score = metrics.f1_score(labels_list, predicted_labels, average='binary')  # Use predicted labels
 
     print(results)
     print(cm)
     print(f"Accuracy = {accuracy_score}")
     print(f"AUPRC = {auprc_score}")
     print(f"AUROC = {auc_score}")
+    print(f"F1_Score = {f1_score}")
 
     # save test metrics
     test_metrics = {
@@ -312,10 +392,11 @@ def test(
         "accuracy": accuracy_score,
         "AUPRC": auprc_score,
         "AUROC": auc_score,
+        "F1_Score": f1_score
     }
     test_metrics.update(results)
     # test_metrics.update(cm) # TO DO: add later
     with open(f"{output_path}/test_results.json", "w") as fp:
         json.dump(test_metrics, fp)
 
-    return loss, accuracy_score, auprc_score, auc_score
+    return loss, accuracy_score, auprc_score, auc_score, f1_score
