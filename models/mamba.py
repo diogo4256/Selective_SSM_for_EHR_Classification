@@ -58,7 +58,7 @@ class EncoderClassifierMamba(nn.Module):
         self.sensor_embedding = nn.Linear(self.sensor_axis_dim_in, self.sensor_axis_dim)  # 74 -> 256
         self.static_embedding = nn.Linear(self.static_count, self.static_out)  # 8 -> 8
         
-        # Fix merger dimensions
+        # Merger and classifier layers
         merged_dim = self.sensor_axis_dim + self.static_out  # 256 + 8 = 264
         self.nonlinear_merger = nn.Linear(merged_dim, merged_dim)  # 264 -> 264
         
@@ -113,6 +113,7 @@ class EncoderClassifierMamba(nn.Module):
         time_embedding = self.time_encoding(time)
         return x + time_embedding
 
+# Masked pooling functions
 def masked_mean_pooling(data_tensor, mask):
     mask_expanded = mask.unsqueeze(-1).expand(data_tensor.size()).float()
     data_summed = torch.sum(data_tensor * mask_expanded, dim=1)

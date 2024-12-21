@@ -29,6 +29,11 @@ import json
 @click.option("--lr", default=0.001, help="learning rate")
 @click.option("--patience", default=10, help="patience for early stopping")
 @click.option(
+    "--loss_function",
+    default="cross_entropy",
+    help="Loss function to use. Options are: cross_entropy, bce_with_logits, mse",
+)
+@click.option(
     "--use_mask",
     default=False,
     help="boolean, use mask for timepoints with no measurements",
@@ -36,7 +41,7 @@ import json
 @click.option(
     "--early_stop_criteria",
     default="auroc",
-    help="what to early stop on. Options are: auroc, auprc, auprc+auroc, or loss",
+    help="what to early stop on. Options are: auroc, auprc, auprc+auroc, f1-score or loss",
 )
 # Existing model parameters...
 @click.option("--seft_n_phi_layers", default=3)
@@ -71,6 +76,7 @@ def core_function(
     lr,
     patience,
     early_stop_criteria,
+    loss_function,
     **kwargs
 ):
 
@@ -84,6 +90,7 @@ def core_function(
     accum_accuracy = []
     accum_auprc = []
     accum_auroc = []
+    accum_f1score = []
 
     for split_index in range(1, 6):
 
@@ -115,6 +122,7 @@ def core_function(
             "early_stop_criteria": early_stop_criteria,
             "base_path": base_path,
             "pooling_fxn": model_args["pooling"],
+            "loss_function": loss_function,
         }
         # Add model-specific settings
         if model_type == "transformer":
@@ -166,7 +174,7 @@ def core_function(
             json.dump(model_settings, fp)
 
         # run training
-        loss, accuracy_score, auprc_score, auc_score = train_test(
+        loss, accuracy_score, auprc_score, auc_score, f1_score = train_test(
             train_pair,
             val_data,
             test_data,
@@ -178,12 +186,14 @@ def core_function(
             patience=patience,
             early_stop_criteria=early_stop_criteria,
             model_args=model_args,
+            loss_function=loss_function
         )
 
         accum_loss.append(loss)
         accum_accuracy.append(accuracy_score)
         accum_auprc.append(auprc_score)
         accum_auroc.append(auc_score)
+        accum_f1score.append(f1_score)
 
     # Save summary statistics
     with open(f"{output_path}/summary.json", "w") as f:
@@ -193,13 +203,14 @@ def core_function(
                 "mean_accuracy": float(np.mean(accum_accuracy)),
                 "mean_auprc": float(np.mean(accum_auprc)),
                 "mean_auroc": float(np.mean(accum_auroc)),
+                "mean_f1score": float(np.mean(accum_f1score)),
                 "std_loss": float(np.std(accum_loss)),
                 "std_accuracy": float(np.std(accum_accuracy)),
                 "std_auprc": float(np.std(accum_auprc)),
                 "std_auroc": float(np.std(accum_auroc)),
+                "std_f1score": float(np.std(accum_f1score)),
             }, f, indent=4,
         )
-
 
 if __name__ == "__main__":
     core_function()
